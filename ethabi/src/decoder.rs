@@ -153,21 +153,24 @@ fn decode_param(param: &ParamType, slices: &[Word], offset: usize) -> Result<Dec
 			let len = as_u32(len_slice)? as usize;
 
 			let tail = &slices[len_offset + 1..];
-			let mut tokens = Vec::with_capacity(len);
-			let mut new_offset = 0;
 
-			for _ in 0..len {
-				let res = decode_param(t, &tail, new_offset)?;
-				new_offset = res.new_offset;
-				tokens.push(res.token);
+			if tail.len() >= len {
+				let mut tokens = Vec::with_capacity(len);
+				let mut new_offset = 0;
+				for _ in 0..len {
+					let res = decode_param(t, &tail, new_offset)?;
+					new_offset = res.new_offset;
+					tokens.push(res.token);
+				}
+
+				let result = DecodeResult { token: Token::Array(tokens), new_offset: offset + 1 };
+
+				Ok(result)
+			} else {
+				Err(Error::InvalidData)
 			}
-
-			let result = DecodeResult { token: Token::Array(tokens), new_offset: offset + 1 };
-
-			Ok(result)
 		}
 		ParamType::FixedArray(ref t, len) => {
-			let mut tokens = Vec::with_capacity(len);
 			let is_dynamic = param.is_dynamic();
 
 			let (tail, mut new_offset) = if is_dynamic {
@@ -176,18 +179,23 @@ fn decode_param(param: &ParamType, slices: &[Word], offset: usize) -> Result<Dec
 				(slices, offset)
 			};
 
-			for _ in 0..len {
-				let res = decode_param(t, &tail, new_offset)?;
-				new_offset = res.new_offset;
-				tokens.push(res.token);
+			if tail.len() >= len {
+				let mut tokens = Vec::with_capacity(len);
+				for _ in 0..len {
+					let res = decode_param(t, &tail, new_offset)?;
+					new_offset = res.new_offset;
+					tokens.push(res.token);
+				}
+
+				let result = DecodeResult {
+					token: Token::FixedArray(tokens),
+					new_offset: if is_dynamic { offset + 1 } else { new_offset },
+				};
+
+				Ok(result)
+			} else {
+				Err(Error::InvalidData)
 			}
-
-			let result = DecodeResult {
-				token: Token::FixedArray(tokens),
-				new_offset: if is_dynamic { offset + 1 } else { new_offset },
-			};
-
-			Ok(result)
 		}
 		ParamType::Tuple(ref t) => {
 			let is_dynamic = param.is_dynamic();
@@ -502,5 +510,23 @@ mod tests {
 				Token::String("0x0000001F".into()),
 			]
 		);
+	}
+
+	#[test]
+	fn decode_corrupted_dynamic_array() {
+		// line 1 at 0x00 =   0: tail offset of array
+		// line 2 at 0x20 =  32: length of array
+		// line 3 at 0x40 =  64: first word
+		// line 4 at 0x60 =  96: second word
+		let encoded = hex!(
+			"
+		0000000000000000000000000000000000000000000000000000000000000020
+		00000000000000000000000000000000000000000000000000000000ffffffff
+		0000000000000000000000000000000000000000000000000000000000000001
+		0000000000000000000000000000000000000000000000000000000000000002
+        "
+		);
+
+		assert!(decode(&[ParamType::Array(Box::new(ParamType::Uint(32)))], &encoded).is_err());
 	}
 }
